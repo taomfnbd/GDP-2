@@ -1,0 +1,26 @@
+{
+  "name": "pdf-filler-service",
+  "version": "1.0.0",
+  "description": "Microservice pour remplir un formulaire PDF",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pdf",
+    "fill",
+    "n8n",
+    "microservice"
+  ],
+  "author": "Cline",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",  
+    "pdf-lib": "^1.17.1"
+  },
+  "engines": {
+    "node": ">=18.0.0" 
+  }
+}
