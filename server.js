@@ -16,9 +16,9 @@ app.use(express.json({ limit: '10mb' }));
 
 // --- Fonctions Helper (Robustifiées) ---
 async function fillTextField(form, fieldName, text) {
-  if (text === null || typeof text === 'undefined') return; // Permet 0 mais pas null/undefined
-  let textToSet = String(text); // Convertit explicitement en chaîne (gère nombres)
-  if (textToSet === '') return; // Ne remplit pas si chaîne vide
+  if (text === null || typeof text === 'undefined') return;
+  let textToSet = String(text);
+  if (textToSet === '') return;
 
   try {
     const field = form.getTextField(fieldName);
@@ -29,54 +29,70 @@ async function fillTextField(form, fieldName, text) {
     }
     field.setText(textToSet);
   } catch (e) {
-    // Ignore l'erreur si le champ n'existe pas, log les autres erreurs
     if (!e.message || !e.message.toLowerCase().includes('no field named')) {
        console.warn(`Erreur texte non gérée pour ${fieldName}: ${e.message}`);
+    } else {
+       // console.log(`Champ texte non trouvé (normal si optionnel): ${fieldName}`);
     }
   }
 }
 
 function selectRadioOption(form, fieldName, optionValue) {
-   if (!optionValue || typeof optionValue !== 'string' || optionValue.trim() === '') return; // Ignore si vide ou pas string
+   if (!optionValue || typeof optionValue !== 'string' || optionValue.trim() === '') return;
 
    const valueToSelect = optionValue.trim();
    try {
      const field = form.getRadioGroup(fieldName);
      const options = field.getOptions();
-     // Cherche une correspondance exacte (insensible à la casse/espaces)
      const foundOption = options.find(opt => opt.trim().toLowerCase() === valueToSelect.toLowerCase());
 
      if (foundOption) {
-         field.select(foundOption); // Utilise l'option exacte du PDF
+         field.select(foundOption);
      } else {
-         // Si pas de match exact, tente la valeur brute (peut échouer si format PDF strict)
-         console.warn(`Radio ${fieldName}: option "${valueToSelect}" non trouvée exactement parmi [${options.join(', ')}]. Tentative avec la valeur brute.`);
-         try {
-            field.select(valueToSelect);
-         } catch (selectError) {
-            console.warn(` -> Échec de la sélection brute pour ${fieldName}: ${selectError.message}`);
+         // Tente de trouver une correspondance partielle ou une valeur standard (ex: "Non" vs "US non")
+         let fallbackOption = null;
+         if (valueToSelect.toLowerCase() === 'non') {
+             fallbackOption = options.find(opt => opt.toLowerCase().includes('non') || opt.toLowerCase().includes('no'));
+         } else if (valueToSelect.toLowerCase() === 'oui') {
+              fallbackOption = options.find(opt => opt.toLowerCase().includes('oui') || opt.toLowerCase().includes('yes'));
+         }
+         // Ajoutez d'autres logiques de fallback si nécessaire
+
+         if(fallbackOption) {
+            console.warn(`Radio ${fieldName}: option "${valueToSelect}" non trouvée exactement. Utilisation du fallback "${fallbackOption}". Options PDF: [${options.join(', ')}]`);
+            field.select(fallbackOption);
+         } else {
+            console.warn(`Radio ${fieldName}: option "${valueToSelect}" non trouvée parmi [${options.join(', ')}]. Tentative avec la valeur brute échouée.`);
+            // Optionnellement, ne rien faire ou logger une erreur plus grave
          }
      }
    } catch (e) {
      if (!e.message || !e.message.toLowerCase().includes('no radio group named')) {
         console.warn(`Erreur radio non gérée pour ${fieldName}: ${e.message}`);
+     } else {
+       // console.log(`Groupe radio non trouvé (normal si optionnel): ${fieldName}`);
      }
    }
 }
 
 function setCheckboxValue(form, fieldName, value) {
-  // Gère explicitement les valeurs communes pour "coché" (Oui, Non, true, false, 1, 0)
   let shouldCheck = false;
   if (typeof value === 'boolean') {
     shouldCheck = value;
   } else if (typeof value === 'string') {
     const lowerValue = value.trim().toLowerCase();
-    shouldCheck = ['true', '1', 'yes', 'on', 'oui'].includes(lowerValue);
+    // Accepte "non" comme false également
+    if (['false', '0', 'no', 'non', ''].includes(lowerValue)) {
+        shouldCheck = false;
+    } else if (['true', '1', 'yes', 'on', 'oui'].includes(lowerValue)) {
+        shouldCheck = true;
+    } else {
+        return; // Ne coche/décoche pas si valeur non reconnue
+    }
   } else if (typeof value === 'number') {
     shouldCheck = value === 1;
   } else {
-    // Si la valeur n'est pas reconnue comme booléen/string/nombre, on ne fait rien
-    return;
+    return; // Ne fait rien si type non reconnu
   }
 
   try {
@@ -86,18 +102,25 @@ function setCheckboxValue(form, fieldName, value) {
   } catch (e) {
      if (!e.message || !e.message.toLowerCase().includes('no check box named')) {
         console.warn(`Erreur checkbox non gérée pour ${fieldName}: ${e.message}`);
+     } else {
+       // console.log(`Checkbox non trouvée (normal si optionnel): ${fieldName}`);
      }
   }
 }
 
 async function fillDateFields(form, dateString, dayField, monthField, yearField, yearLength = 4) {
-    if (!dateString || typeof dateString !== 'string' || !dateString.match(/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/)) {
-        return; // Ne fait rien si format invalide ou vide
+    if (!dateString || typeof dateString !== 'string') return;
+    // Regex plus flexible pour séparateurs et format AAAA-MM-JJ
+    const match = dateString.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$|^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+    if (!match) return;
+
+    let day, month, fullYear;
+    if (match[1]) { // Format JJ/MM/AAAA ou JJ-MM-AAAA
+        [day, month, fullYear] = [match[1], match[2], match[3]];
+    } else { // Format AAAA-MM-JJ ou AAAA/MM/JJ
+        [fullYear, month, day] = [match[4], match[5], match[6]];
     }
-    const separator = dateString.includes('/') ? '/' : '-';
-    const parts = dateString.split(separator);
-    if (parts.length !== 3) return;
-    let [day, month, fullYear] = parts;
+
     day = day.padStart(2, '0');
     month = month.padStart(2, '0');
     const year = yearLength === 2 ? fullYear.slice(-2) : fullYear.padStart(4, '20');
@@ -112,7 +135,7 @@ async function fillIbanFields(form, ibanString, baseFieldName, numFields) {
     const cleanedIban = String(ibanString).replace(/\s/g, '').toUpperCase();
     const segmentLength = 4;
     for (let i = 0; i < numFields; i++) {
-        const fieldName = `${baseFieldName}-${i + 1}`;
+        const fieldName = `${baseFieldName}-${i + 1}`; // Ex: S-IBAN-1, S-IBAN-2...
         const start = i * segmentLength;
         const end = start + segmentLength;
         const segment = cleanedIban.substring(start, end);
@@ -122,101 +145,145 @@ async function fillIbanFields(form, ibanString, baseFieldName, numFields) {
 // --- Fin Fonctions Helper ---
 
 
-// --- Fonction de Remplissage du PDF Modèle (Révisée pour JSON plat et données IA) ---
+// --- Fonction de Remplissage du PDF Modèle (Utilisant les noms de champs PDF confirmés) ---
 async function fillOutputPdf(outputForm, data) {
-    console.log("Début du remplissage du PDF modèle avec JSON plat de l'IA...");
-
-    // Utilise directement les clés du JSON plat 'data'
-    // Les clés ici doivent correspondre EXACTEMENT aux clés du JSON produit par l'IA
+    console.log("Remplissage PDF avec noms de champs confirmés...");
 
     // --- Section Souscripteur ---
-    // !! Vérifier la correspondance sémantique et les noms exacts des champs PDF !!
-    selectRadioOption(outputForm, 'S-proprietaire', data.housingStatus); // Ex: "Locataire"
-    selectRadioOption(outputForm, 'S-titre', data.civility); // Souvent vide
-    // Tentative de séparation Nom/Prénom (très spéculatif)
+    selectRadioOption(outputForm, 'S-proprietaire', data.housingStatus);
+    selectRadioOption(outputForm, 'S-titre', data.civility); // Vide si IA ne trouve pas
+
     const nameParts = (data.fullName || "").split(' ');
-    const prenom = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : data.fullName; // Tout sauf le dernier mot
-    const nom = nameParts.length > 1 ? nameParts[nameParts.length - 1] : ''; // Dernier mot
-    await fillTextField(outputForm, 'S-prenom souscripteur 2', prenom); // Souvent vide
-    await fillTextField(outputForm, 'S-nom souscripteur 2', nom); // Souvent vide
-    await fillTextField(outputForm, 'S-nom-fille souscripteur 2', data.birthName); // Souvent vide
-    await fillDateFields(outputForm, data.birthDate, 'S-jour souscripteur 2', 'S-mois souscripteur 3', 'S-annee souscripteur 2'); // Souvent vide
-    await fillTextField(outputForm, 'S-nationalite souscripteur 2', data.nationality); // Souvent vide
+    const prenom = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : data.fullName;
+    const nom = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+    await fillTextField(outputForm, 'S-prenom souscripteur 2', prenom); // Vide si IA ne trouve pas
+    await fillTextField(outputForm, 'S-nom souscripteur 2', nom); // Vide si IA ne trouve pas
+    await fillTextField(outputForm, 'S-nom-fille souscripteur 2', data.birthName); // Vide si IA ne trouve pas
+    await fillDateFields(outputForm, data.birthDate, 'S-jour souscripteur 2', 'S-mois souscripteur 3', 'S-annee souscripteur 2'); // Vide si IA ne trouve pas
+    await fillTextField(outputForm, 'S-nationalite souscripteur 2', data.nationality); // Vide si IA ne trouve pas
+    await fillTextField(outputForm, 'S-commune-naissance souscripteur 2', ''); // Clé manquante: data.lieu_naissance
+    await fillTextField(outputForm, 'S-departement-naissance souscripteur 2', ''); // Clé manquante: data.departement_naissance
+    await fillTextField(outputForm, 'S-pays-naissance souscripteur 2', ''); // Clé manquante: data.pays_naissance
 
-    // Adresse: Prend la première ligne si data.address est une chaîne multi-lignes
+    // Adresse - Remplissage basique du champ principal
     const firstLineAddress = (data.address || "").split('\n')[0];
-    await fillTextField(outputForm, 'S-adresse souscripteur 2', firstLineAddress); // Souvent vide
-    await fillTextField(outputForm, 'S-pays souscripteur 2', data.fiscalResidenceCountry); // Ex: "France"
+    await fillTextField(outputForm, 'S-adresse souscripteur 2', firstLineAddress); // Vide si IA ne trouve pas
+    // Les champs CP, Ville ne sont pas remplis car l'IA ne les structure pas
+    await fillTextField(outputForm, 'S-pays souscripteur 2', data.fiscalResidenceCountry);
 
-    await fillTextField(outputForm, 'S-telephone souscripteur 2', data.phoneMobile); // Ex: "+33"
-    await fillTextField(outputForm, 'S-mail souscripteur 2', data.email); // Souvent vide
-    selectRadioOption(outputForm, 'S-situation-famille', data.maritalStatus); // Ex: "Célibataire"
-    selectRadioOption(outputForm, 'S-capacite', data.protectionMeasure); // Ex: "Aucune"
-    selectRadioOption(outputForm, 'S-residence', data.fiscalResidenceCountry); // Ex: "France"
+    // Adresse Fiscale - Non gérée car dépend de la logique "si différente" non extraite
+    // await fillTextField(outputForm, 'S-no-adresse fiscal', ...);
+    // await fillTextField(outputForm, 'S-adresse fiscal', ...);
+    // await fillTextField(outputForm, 'S-code-postal fiscal', ...);
+    // await fillTextField(outputForm, 'S-ville fiscal', ...);
+
+    await fillTextField(outputForm, 'S-telephone souscripteur 2', data.phoneMobile); // Utilise Mobile
+    await fillTextField(outputForm, 'S-mail souscripteur 2', data.email); // Vide si IA ne trouve pas
+    selectRadioOption(outputForm, 'S-situation-famille', data.maritalStatus);
+    selectRadioOption(outputForm, 'S-regime-matrimonial', data.maritalRegime); // Clé manquante
+    // selectRadioOption(outputForm, 'S-associe', data.deja_associe ? 'oui' : 'non'); // Clé manquante
+    // await fillTextField(outputForm, 'code associe', data.code_associe); // Clé manquante
+    selectRadioOption(outputForm, 'S-capacite', data.protectionMeasure);
+    // await fillTextField(outputForm, 'S-capacite souscripteur_autre 3', data.capacite_juridique_autre); // Clé manquante
+    selectRadioOption(outputForm, 'S-residence', data.fiscalResidenceCountry);
+    // await fillTextField(outputForm, 'S-residence souscripteur_autre 4', data.residence_fiscale_autre); // Clé manquante
+    selectRadioOption(outputForm, 'S-regime fiscal', ''); // Clé manquante: data.regime_fiscal
 
     // Conversion Oui/Non pour US Person et PPE
-    const isUSPersonValue = data.isUSPerson === 'Non' ? 'US non' : (data.isUSPerson === 'Oui' ? 'US oui' : '');
-    selectRadioOption(outputForm, 'S-citoyen US', isUSPersonValue); // Ex: "US non"
-    const isPPEValue = data.isPPE === 'Non' ? 'LCB non' : (data.isPPE === 'Oui' ? 'LCB oui' : '');
-    selectRadioOption(outputForm, 'S-esxpose LCT', isPPEValue); // Ex: "LCB non"
+    const isUSPersonValue = data.isUSPerson === 'Non' ? 'US non' : (data.isUSPerson === 'Oui' ? 'US oui' : null);
+    if (isUSPersonValue) selectRadioOption(outputForm, 'S-citoyen US', isUSPersonValue);
+    const isPPEValue = data.isPPE === 'Non' ? 'LCB non' : (data.isPPE === 'Oui' ? 'LCB oui' : null);
+    if (isPPEValue) selectRadioOption(outputForm, 'S-esxpose LCT', isPPEValue);
 
-    selectRadioOption(outputForm, 'QPP-SPR-activite', data.socioProfessionalCategory); // Souvent vide
-    await fillTextField(outputForm, 'QPP-SPR-profession souscripteur', data.profession); // Souvent vide
+    selectRadioOption(outputForm, 'QPP-SPR-activite', data.socioProfessionalCategory); // Vide si IA ne trouve pas
+    await fillTextField(outputForm, 'QPP-SPR-profession souscripteur', data.profession); // Vide si IA ne trouve pas
+    // await fillTextField(outputForm, 'QPP-SPR-secteur activite Co_sous', data.secteur_activite); // Clé manquante
 
     // --- Co-souscripteur ---
-    // Ignoré pour l'instant car non géré par le JSON plat
+    // Ignoré
 
     // --- Souscription ---
-    // Les clés spécifiques à la souscription (nombre_parts, montant_total, etc.)
-    // n'étaient pas dans le JSON IA, donc ces champs resteront vides.
-    // await fillTextField(outputForm, 'S-nb-part', data.nombre_parts);
-    // await fillTextField(outputForm, 'S-total-souscription', data.montant_total);
-    // await fillTextField(outputForm, 'S-somme-reglee', data.reglement_montant);
+    await fillTextField(outputForm, 'S-nb-part', ''); // Clé manquante
+    await fillTextField(outputForm, 'S-total-souscription', ''); // Clé manquante
+    await fillTextField(outputForm, 'S-somme-reglee', ''); // Clé manquante
+    await fillTextField(outputForm, 'S-nom-prenom-cheque', ''); // Clé manquante
+    await fillTextField(outputForm, 'S-pays-fonds', ''); // Clé manquante
+    await fillTextField(outputForm, 'S-montant-financement', ''); // Clé manquante
+    await fillTextField(outputForm, 'S-banque', ''); // Clé manquante
 
     // --- Origine des Fonds ---
-    // Clés manquantes dans le JSON IA
+    // Utilise setCheckboxValue avec les noms de champs PDF confirmés
+    setCheckboxValue(outputForm, 'fond epargne', data.epargne); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-epargne', data.epargne_pct); // Clé manquante
+    setCheckboxValue(outputForm, 'fond heritage', data.heritage); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-heritage', data.heritage_pct); // Clé manquante
+    setCheckboxValue(outputForm, 'fond donation', data.donation); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-donation', data.donation_pct); // Clé manquante
+    setCheckboxValue(outputForm, 'fond credit', data.credit); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-credit', data.credit_pct); // Clé manquante
+    setCheckboxValue(outputForm, 'fond cession activite', data.cession_activite); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-cessation', data.cession_activite_pct); // Clé manquante
+    setCheckboxValue(outputForm, 'fond idemnites', data.prestations); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-indemnites', data.prestations_pct); // Clé manquante
+    setCheckboxValue(outputForm, 'fond autre', data.autres); // Clé manquante
+    await fillTextField(outputForm, 'S-pourcent-autres', data.autres_pct); // Clé manquante
+    await fillTextField(outputForm, 'fond autre quid', data.autres_details); // Clé manquante
 
     // --- Versements Programmés ---
-    // Clés manquantes dans le JSON IA
+    // selectRadioOption(outputForm, 'S-souscrip-vers prog', data.frequence); // Clé manquante
+    // await fillTextField(outputForm, 'S-somme investie 2', data.montant); // Clé manquante
+    // await fillTextField(outputForm, 'S-versement fait a', data.signature_lieu); // Clé manquante
+    // await fillDateFields(outputForm, data.signature_date, 'S-versement le', 'S-versement mois', 'S-versement annee', 4); // Clé manquante
 
     // --- Réinvestissement ---
-    // Clés manquantes dans le JSON IA
-    // Note: Les champs signature page 7 sont liés à cette section dans le code original
-    // await fillTextField(outputForm, 'S-Fait à', data.reinvestissement_signature_lieu); // Clé manquante
-    // await fillDateFields(outputForm, data.reinvestissement_signature_date, 'Date1_af_date.0', 'Date1_af_date.1', 'Date1_af_date.2', 2); // Clé manquante
+    // selectRadioOption(outputForm, 'S-Somme reinvestie ', data.reinvestissement_option); // Clé manquante
+    // await fillTextField(outputForm, 'S-% somme re-investie', data.reinvestissement_taux); // Clé manquante
+    await fillTextField(outputForm, 'S-Fait à', ''); // Clé manquante: data.reinvestissement_signature_lieu
+    await fillDateFields(outputForm, '', 'Date1_af_date.0', 'Date1_af_date.1', 'Date1_af_date.2', 2); // Clé manquante: data.reinvestissement_signature_date
 
     // --- Préférences Communication ---
-    // Clés manquantes dans le JSON IA
-    // Note: Les champs signature page 8 sont liés à cette section
-    // await fillTextField(outputForm, 'S-fait-a', data.pref_signature_lieu); // Clé manquante
-    // await fillDateFields(outputForm, data.pref_signature_date, 'S-fait-a-date-jj#BS SIGNAT', 'S-fait-a-date-mm#BS SIGNAT', 'S-fait-a-date-yyyy#BS SIGNAT', 4); // Clé manquante
+    // selectRadioOption(outputForm, 'Convoc assemblees', data.convocation_ag_demat ? 'oui' : 'non '); // Clé manquante
+    // selectRadioOption(outputForm, 'bordereau fiscal', data.bordereau_fiscal_demat ? 'oui' : 'non '); // Clé manquante
+    await fillTextField(outputForm, 'S-fait-a', ''); // Clé manquante: data.pref_signature_lieu
+    await fillDateFields(outputForm, '', 'S-fait-a-date-jj#BS SIGNAT', 'S-fait-a-date-mm#BS SIGNAT', 'S-fait-a-date-yyyy#BS SIGNAT', 4); // Clé manquante: data.pref_signature_date
 
     // --- SEPA ---
-    // Clés manquantes dans le JSON IA
+    // await fillTextField(outputForm, 'S-nom 6', data.nom_titulaire); // Clé manquante
+    // await fillTextField(outputForm, 'S-no-adresse 5', data.adresse_no); // Clé manquante
+    // await fillTextField(outputForm, 'S-adresse7', data.adresse_rue); // Clé manquante
+    // await fillTextField(outputForm, 'S-code-postal 5', data.cp); // Clé manquante
+    // await fillTextField(outputForm, 'S-ville 5', data.ville); // Clé manquante
+    // await fillTextField(outputForm, 'S-pays 5', data.pays); // Clé manquante
+    // await fillIbanFields(outputForm, data.iban, 'S-IBAN', 7); // Clé manquante
+    // await fillTextField(outputForm, 'S-BIC', data.bic); // Clé manquante
+    // setCheckboxValue(outputForm, 'paiement ponctuel', data.type_paiement_ponctuel); // Clé manquante
+    // setCheckboxValue(outputForm, 'paiement recurrent', data.type_paiement_recurrent); // Clé manquante
+    // await fillTextField(outputForm, 'S-fait a 5', data.signature_lieu); // Clé manquante
+    // await fillDateFields(outputForm, data.signature_date, 'S-fait-a-date-jj', 'S-fait-a-date-mm', 'S-fait-a-date-yyyy', 4); // Clé manquante
 
-    // --- Champs Financiers et Fiscaux (Utilisation des clés présentes) ---
-    // !! Trouver les noms exacts des champs PDF correspondants !!
-    // Les noms ci-dessous sont des exemples basés sur les libellés
-    await fillTextField(outputForm, 'Epargne Precaution Souhaitee', data.precautionSavings); // Ex: 10000
-    await fillTextField(outputForm, 'Total Actifs Bruts', data.assetsTotal); // Ex: 4689
-    await fillTextField(outputForm, 'Total Passifs', data.liabilitiesTotal); // Ex: 0
-    await fillTextField(outputForm, 'Total Revenus', data.totalIncome); // Ex: 29640
-    await fillTextField(outputForm, 'Total Charges', data.totalExpenses); // Ex: 0
-    await fillTextField(outputForm, 'Annee IR', data.taxYear); // Ex: "2024"
-    await fillTextField(outputForm, 'Total Salaires Assimiles', data.grossSalary); // Ex: 12196
-    await fillTextField(outputForm, 'TMI IR', data.marginalTaxRate ? (data.marginalTaxRate * 100).toFixed(2) + ' %' : ''); // Ex: "11.00 %"
-    await fillTextField(outputForm, 'Revenu Brut Global IR', data.grossIncome); // Ex: 10976
-    await fillTextField(outputForm, 'Impot Revenu Net', data.netTaxAmount); // Ex: "0"
+    // --- Champs Financiers et Fiscaux (Utilisation des clés présentes et noms PDF potentiels) ---
+    // !! Les noms de champs PDF ici sont des SUPPOSITIONS basées sur les libellés !!
+    // !! Il FAUT les vérifier dans le PDF réel !!
+    await fillTextField(outputForm, 'Epargne Precaution Souhaitee', data.precautionSavings); // Nom PDF ?
+    await fillTextField(outputForm, 'Total Actifs Bruts', data.assetsTotal); // Nom PDF ?
+    await fillTextField(outputForm, 'Total Passifs', data.liabilitiesTotal); // Nom PDF ?
+    await fillTextField(outputForm, 'Total Revenus', data.totalIncome); // Nom PDF ?
+    await fillTextField(outputForm, 'Total Charges', data.totalExpenses); // Nom PDF ?
+    await fillTextField(outputForm, 'Annee N', data.taxYear); // Nom PDF ? ('IR acquitté en' ?)
+    await fillTextField(outputForm, 'Total Salaires Assimiles', data.grossSalary); // Nom PDF ?
+    await fillTextField(outputForm, 'TMI IR', data.marginalTaxRate ? (data.marginalTaxRate * 100).toFixed(2) + ' %' : ''); // Nom PDF ?
+    await fillTextField(outputForm, 'Revenu brut global', data.grossIncome); // Nom PDF ?
+    await fillTextField(outputForm, 'Impot sur le revenu net', data.netTaxAmount); // Nom PDF ?
 
-    // Champs liés à l'épargne (si les champs PDF existent)
-    await fillTextField(outputForm, 'Epargne Total', data.savingsTotal);
-    await fillTextField(outputForm, 'Epargne Court Terme', data.shortTermSavings);
-    await fillTextField(outputForm, 'Epargne Livret A', data.livretA);
-    await fillTextField(outputForm, 'Epargne Compte Courant', data.currentAccount);
-    await fillTextField(outputForm, 'Epargne Long Terme', data.longTermSavings);
-    await fillTextField(outputForm, 'Epargne Assurance Vie', data.lifeInsurance);
+    // Champs liés à l'épargne (Noms PDF inconnus)
+    // await fillTextField(outputForm, '???', data.savingsTotal);
+    // await fillTextField(outputForm, '???', data.shortTermSavings);
+    // await fillTextField(outputForm, '???', data.livretA);
+    // await fillTextField(outputForm, '???', data.currentAccount);
+    // await fillTextField(outputForm, '???', data.longTermSavings);
+    // await fillTextField(outputForm, '???', data.lifeInsurance);
 
-    console.log("Remplissage (potentiellement partiel) du PDF modèle terminé.");
+    console.log("Remplissage PDF terminé avec les noms de champs connus.");
 }
 // --- Fin Fonction de Remplissage ---
 
@@ -233,13 +300,10 @@ app.post('/fill', async (req, res) => {
     console.error("Données JSON invalides reçues sur /fill. Attendu: objet plat.");
     return res.status(400).send('Corps de la requête invalide ou manquant (doit être un objet JSON plat)');
   }
-  // Vérifie si l'objet est vide (aucune clé extraite)
   if (Object.keys(data).length === 0 && data.constructor === Object) {
      console.error("Données JSON reçues vides sur /fill.");
-     // On pourrait renvoyer une erreur ou un PDF vide
-     // Pour l'instant, on continue pour générer un PDF quasi-vide
+     // Continue pour générer un PDF quasi-vide
   }
-
 
   try {
     // Lire le modèle PDF
@@ -274,11 +338,6 @@ app.post('/fill', async (req, res) => {
 });
 
 // Ancienne route /fill_from_pdf (supprimée car non utilisée dans ce flux)
-/*
-app.post('/fill_from_pdf', express.raw({ type: 'application/pdf', limit: '20mb' }), async (req, res) => {
-    // ... code ...
-});
-*/
 
 // Endpoint de test simple
 app.get('/', (req, res) => {
